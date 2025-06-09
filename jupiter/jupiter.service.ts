@@ -1,26 +1,15 @@
-import {
-  CloseDCAParams,
-  CreateDCAParamsV2,
-  DCA,
-  Network
-} from '@jup-ag/dca-sdk';
-import {
-  LimitOrderProvider
-} from '@jup-ag/limit-order-sdk';
-import {
-  Injectable,
-  Logger,
-  OnModuleInit
-} from '@nestjs/common';
+import { CloseDCAParams, CreateDCAParamsV2, DCA, Network } from '@jup-ag/dca-sdk';
+import { LimitOrderProvider } from '@jup-ag/limit-order-sdk';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import {
   Connection,
   Keypair,
   PublicKey,
   TransactionSignature,
   VersionedTransaction,
-  sendAndConfirmTransaction
+  sendAndConfirmTransaction,
 } from '@solana/web3.js';
-import { ChainNames } from 'modules/blockchain/constants';
+import { ChainNames, ZERO_SOL_ADDRESS } from 'modules/blockchain/constants';
 import { ExecuteLimitOrderDto } from 'modules/blockchain/dto/params';
 import { SwapResponseDto } from 'modules/blockchain/dto/response.dto';
 import { SolanaUtils } from 'modules/blockchain/solana.utils';
@@ -40,10 +29,12 @@ export class JupiterService implements OnModuleInit {
   private HELIUM_RPC_URL: string;
 
   private ENDPOINT_APIS_URL = {
-    QUOTE: 'https://quote-api.jup.ag/v6/quote?',
-    SWAP: 'https://quote-api.jup.ag/v6/swap',
-    CREATE_ORDER: 'https://api.jup.ag/limit/v2/createOrder',
-    CANCEL_ORDER: 'https://api.jup.ag/limit/v2/cancelOrders',
+    QUOTE: 'https://lite-api.jup.ag/swap/v1/quote',
+    SWAP: 'https://lite-api.jup.ag/swap/v1/swap',
+    CREATE_ORDER: 'https://lite-api.jup.ag/trigger/v1/createOrder',
+    CANCEL_ORDERS: 'https://lite-api.jup.ag/trigger/v1/cancelOrders',
+    TRIGGER_ORDERS: 'https://lite-api.jup.ag/trigger/v1/getTriggerOrders',
+    PRICE: 'https://lite-api.jup.ag/price/v2',
   };
 
   constructor(
@@ -52,7 +43,7 @@ export class JupiterService implements OnModuleInit {
     private readonly solanaUtils: SolanaUtils,
     private readonly userRepository: UserRepository,
     private readonly accountRepository: AccountRepository,
-    private readonly feeService: FeeService
+    private readonly feeService: FeeService,
   ) {
     this.HELIUM_RPC_URL = settingsService.getSettings().solana.rpc;
   }
@@ -74,25 +65,17 @@ export class JupiterService implements OnModuleInit {
     const tokenFromAddress = await this.solanaUtils.normalizeSolanaAddressOrSymbol(
       tokenFrom,
       ChainNames.SOLANA,
-      userAccount.address
+      userAccount.address,
     );
     const tokenToAddress = await this.solanaUtils.normalizeSolanaAddressOrSymbol(
       tokenTo,
       ChainNames.SOLANA,
-      userAccount.address
+      userAccount.address,
     );
     const { encryptedKey, user } = await this.userRepository.getUserAccount(userId, userAddress);
     const privateKey = await this.kmsService.decryptSecret(encryptedKey);
     const walletKeypair = this.solanaUtils.privateKeyToKeypair(privateKey);
-    const price = await this.getPrice(tokenFromAddress);
-    const totalUSD = parseFloat(amount) * price;
-    const cycleUSD = parseFloat(amountPerCycle) * price;
-    if (totalUSD < 100) {
-      throw new Error('Minimal amount for subscription is 100 USD');
-    }
-    if (totalUSD / cycleUSD < 2) {
-      throw new Error('Minimal amount per cycle is 50 USD');
-    }
+
     let balance = '0';
     if (['sol', 'solana'].includes(tokenFrom.toLowerCase())) {
       balance = await this.solanaUtils.getBalance(userAccount.address);
@@ -108,7 +91,7 @@ export class JupiterService implements OnModuleInit {
       walletKeypair,
       parseFloat(amount),
       parseFloat(amountPerCycle),
-      parseInt(cycleInterval)
+      parseInt(cycleInterval),
     );
   }
 
@@ -161,7 +144,7 @@ export class JupiterService implements OnModuleInit {
           nextCycleAt: formatTimestamp(acct.nextCycleAt.toString()),
           createdAt: formatTimestamp(acct.createdAt.toString()),
         };
-      })
+      }),
     );
   }
 
@@ -179,7 +162,7 @@ export class JupiterService implements OnModuleInit {
     cycleFrequency: number,
     minOutAmountPerCycle?: bigint,
     maxOutAmountPerCycle?: bigint,
-    startAt?: number
+    startAt?: number,
   ): Promise<{ transactionSignature: TransactionSignature; dcaPubKey: PublicKey }> {
     const dcaClient = new DCA(this.connection, Network.MAINNET);
     const decimals = await this.solanaUtils.getTokenDecimals(input);
@@ -224,7 +207,7 @@ export class JupiterService implements OnModuleInit {
     asLegacyTransaction = false,
     excludeDexes?: string[],
     maxAccounts?: number,
-    platformFeeBps?: number
+    platformFeeBps?: number,
   ): Promise<any> {
     const decimals = await this.solanaUtils.getTokenDecimals(inputMint);
     const params = new URLSearchParams({
@@ -247,7 +230,8 @@ export class JupiterService implements OnModuleInit {
     if (platformFeeBps !== undefined) {
       params.append('plateformFeeBps', platformFeeBps.toString());
     }
-    const quoteUrl = `${this.ENDPOINT_APIS_URL.QUOTE}${params.toString()}`;
+
+    const quoteUrl = `${this.ENDPOINT_APIS_URL.QUOTE}?${params.toString()}`;
     const response = await fetch(quoteUrl);
     const data = await response.json();
     if (data.routePlan === undefined) {
@@ -270,7 +254,7 @@ export class JupiterService implements OnModuleInit {
     asLegacyTransaction = false,
     excludeDexes?: string[],
     maxAccounts?: number,
-    platformFeeBps?: number
+    platformFeeBps?: number,
   ): Promise<TransactionSignature> {
     let finalQuote = quoteResponse;
     if (!finalQuote) {
@@ -284,7 +268,7 @@ export class JupiterService implements OnModuleInit {
         asLegacyTransaction,
         excludeDexes,
         maxAccounts,
-        platformFeeBps
+        platformFeeBps,
       );
     }
     const body: any = {
@@ -295,6 +279,7 @@ export class JupiterService implements OnModuleInit {
     if (prioritizationFeeLamports !== undefined) {
       body.prioritizationFeeLamports = prioritizationFeeLamports;
     }
+    this.logger.log(` -> ENDPOINT_APIS_URL: ${this.ENDPOINT_APIS_URL.SWAP}`);
     const response = await fetch(this.ENDPOINT_APIS_URL.SWAP, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -309,9 +294,11 @@ export class JupiterService implements OnModuleInit {
     outputMint: string,
     amount: number,
     slippageBps = 50,
-    fromKeypair: Keypair
+    fromKeypair: Keypair,
   ): Promise<TransactionSignature> {
-    amount = parseFloat(await this.feeService.payFee(ChainNames.SOLANA, amount.toString(), inputMint, false, fromKeypair, Ops.SWAP));
+    amount = parseFloat(
+      await this.feeService.payFee(ChainNames.SOLANA, amount.toString(), inputMint, false, fromKeypair, Ops.SWAP),
+    );
     const quoteData = await this.getQuote(inputMint, outputMint, amount, slippageBps);
     const rawSwapTx = await this.getSwapTransaction(
       inputMint,
@@ -319,7 +306,7 @@ export class JupiterService implements OnModuleInit {
       fromKeypair,
       amount,
       quoteData,
-      Math.round(await this.solanaUtils.estimateNetworkPrioritizationFee(this.HELIUM_RPC_URL))
+      Math.round(await this.solanaUtils.estimateNetworkPrioritizationFee(this.HELIUM_RPC_URL)),
     );
     const txBuffer = Buffer.from(rawSwapTx, 'base64');
     const decodedTx = VersionedTransaction.deserialize(txBuffer);
@@ -333,13 +320,12 @@ export class JupiterService implements OnModuleInit {
         lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
         signature: txSig,
       },
-      'confirmed'
+      'confirmed',
     );
     return txSig;
   }
 
   async swapTokens(params: SwapSolanaParams): Promise<SwapResponseDto> {
-
     const { userId, fromAddress, tokenMetadataFrom, tokenMetadataTo, amount } = params;
     const { encryptedKey, user } = await this.userRepository.getUserAccount(userId, fromAddress);
     const privateKey = await this.kmsService.decryptSecret(encryptedKey);
@@ -348,7 +334,15 @@ export class JupiterService implements OnModuleInit {
     const toMint = tokenMetadataTo.address;
     const chainSlippage = await this.accountRepository.getSlippageForChain(userId, fromAddress, ChainNames.SOLANA);
     const slippageBps = chainSlippage ?? 50;
-    const signature = await this.executeSwap(fromMint, toMint, parseFloat(amount), parseFloat(amount) / 100 * slippageBps, keypair);
+
+    const signature = await this.executeSwap(
+      fromMint,
+      toMint,
+      parseFloat(amount),
+      slippageBps, //(parseFloat(amount) / 100) * slippageBps,
+      keypair,
+    );
+
     return {
       transactionHash: signature,
       explorerUrl: await this.solanaUtils.getExplorerUrlForTx(signature),
@@ -366,15 +360,16 @@ export class JupiterService implements OnModuleInit {
     const tokenFromAddress = await this.solanaUtils.normalizeSolanaAddressOrSymbol(
       params.tokenSymbolFrom,
       ChainNames.SOLANA,
-      params.fromAddress
+      params.fromAddress,
     );
     const tokenToAddress = await this.solanaUtils.normalizeSolanaAddressOrSymbol(
       params.tokenSymbolTo,
       ChainNames.SOLANA,
-      params.fromAddress
+      params.fromAddress,
     );
     const fromMeta = await this.solanaUtils.getTokenMetadata(tokenFromAddress);
     const toMeta = await this.solanaUtils.getTokenMetadata(tokenToAddress);
+
     return this.swapTokens({
       userId: params.userId,
       fromAddress: params.fromAddress,
@@ -395,18 +390,19 @@ export class JupiterService implements OnModuleInit {
     return provider.getTradeHistory({ wallet: walletAddress });
   }
 
-
   async openOrder(
     fromKeypair: Keypair,
     inputMint: string,
     outputMint: string,
     inAmount: number,
     outAmount: number,
-    expiredAt?: number
+    expiredAt?: number,
   ): Promise<string> {
-    const decimals = await this.solanaUtils.getTokenDecimals(inputMint);
-    const makingAmount = Math.round(inAmount * Math.pow(10, decimals));
+    // const decimals = await this.solanaUtils.getTokenDecimals(inputMint);
+    // const makingAmount = Math.round(inAmount * Math.pow(10, decimals));
+    const makingAmount = Math.round(inAmount);
     const takingAmount = Math.round(outAmount);
+
     const body: any = {
       inputMint,
       outputMint,
@@ -419,7 +415,8 @@ export class JupiterService implements OnModuleInit {
       computeUnitPrice: 'auto',
     };
     if (expiredAt) {
-      body.params.expiredAt = expiredAt.toString();
+      const now = Math.floor(new Date().getTime() / 1000);
+      body.params.expiredAt = (now + expiredAt).toString();
     }
     const response = await fetch(this.ENDPOINT_APIS_URL.CREATE_ORDER, {
       method: 'POST',
@@ -427,10 +424,10 @@ export class JupiterService implements OnModuleInit {
       body: JSON.stringify(body),
     });
     const data = await response.json();
-    if (!data?.tx) {
+    if (!data?.transaction) {
       throw new Error(`Missing 'tx' in createOrder response: ${JSON.stringify(data)}`);
     }
-    const transaction = VersionedTransaction.deserialize(Buffer.from(data.tx, 'base64'));
+    const transaction = VersionedTransaction.deserialize(Buffer.from(data.transaction, 'base64'));
     transaction.sign([fromKeypair]);
     const rawTx = transaction.serialize();
     const txSig = await this.connection.sendRawTransaction(rawTx, {
@@ -439,50 +436,57 @@ export class JupiterService implements OnModuleInit {
     });
     const confirmation = await this.connection.confirmTransaction(txSig, 'finalized');
     if (confirmation.value.err) {
-      throw new Error(`Transaction failed: ${JSON.stringify(confirmation.value.err)}\n\nhttps://solscan.io/tx/${txSig}`);
+      throw new Error(
+        `Transaction failed: ${JSON.stringify(confirmation.value.err)}\n\nhttps://solscan.io/tx/${txSig}`,
+      );
     }
     return txSig;
   }
 
-  public async createLimitOrder(
-    args: ExecuteLimitOrderDto,
-  ): Promise<CreateOrderDto> {
+  public async createLimitOrder(args: ExecuteLimitOrderDto): Promise<CreateOrderDto> {
     const threshold = Math.abs(parseFloat(args.threshold!));
     const expiration = parseInt(args.expiration!);
 
-    const { encryptedKey, user } = await this.userRepository.getUserAccount(
-      args.userId,
-      args.userAddress
-    );
-    const fromKeypair = this.solanaUtils.privateKeyToKeypair(
-      await this.kmsService.decryptSecret(encryptedKey)
-    );
+    const { encryptedKey, user } = await this.userRepository.getUserAccount(args.userId, args.userAddress);
+    const fromKeypair = this.solanaUtils.privateKeyToKeypair(await this.kmsService.decryptSecret(encryptedKey));
 
     const tokenFromAddress = await this.solanaUtils.normalizeSolanaAddressOrSymbol(
       args.tokenSymbolFrom,
       ChainNames.SOLANA,
-      args.userAddress
+      args.userAddress,
     );
     const tokenToAddress = await this.solanaUtils.normalizeSolanaAddressOrSymbol(
       args.tokenSymbolTo,
       ChainNames.SOLANA,
-      args.tokenSymbolTo
+      args.tokenSymbolTo,
     );
 
     const decimals = await this.solanaUtils.getTokenDecimals(tokenFromAddress);
     const expandedAmount = parseFloat(args.amount) * Math.pow(10, decimals);
-    const required = expandedAmount + (expandedAmount * threshold) / 100;
+    // const required = expandedAmount + (expandedAmount * threshold) / 100;
+
+    const priceResponse = await fetch(`${this.ENDPOINT_APIS_URL.PRICE}?ids=${tokenFromAddress},${tokenToAddress}`);
+    const priceData = await priceResponse.json();
+
+    let currentPrice = 1;
+
+    if (priceData.data) {
+      currentPrice = Number(priceData.data[tokenToAddress].price) / Number(priceData.data[tokenFromAddress].price);
+    }
+    const targetPrice = currentPrice * parseFloat(args.amount) * ((100 - threshold) / 100);
+    const required = (parseFloat(args.amount) / targetPrice) * 1_000_000_000;
+
     await this.openOrder(
       fromKeypair,
-      tokenToAddress,
       tokenFromAddress,
+      tokenToAddress,
       expandedAmount, // "obtained"
       required,
-      expiration
+      expiration,
     );
 
     this.logger.log(
-      `Order created for ${tokenToAddress} → ${tokenFromAddress} with obtained=${expandedAmount}, required=${required}, expiration=${expiration}`
+      `Order created for ${tokenToAddress} → ${tokenFromAddress} with obtained=${expandedAmount}, required=${required}, expiration=${expiration}`,
     );
 
     const order: CreateOrderDto = {
@@ -512,7 +516,6 @@ export class JupiterService implements OnModuleInit {
     };
 
     return order;
-
   }
 
   async cancelLimitOrders(fromKeypair: Keypair, orders: string[] = []): Promise<string[]> {
@@ -523,17 +526,17 @@ export class JupiterService implements OnModuleInit {
     if (orders.length) {
       body.orders = orders;
     }
-    const response = await fetch(this.ENDPOINT_APIS_URL.CANCEL_ORDER, {
+    const response = await fetch(this.ENDPOINT_APIS_URL.CANCEL_ORDERS, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
     const data = await response.json();
-    if (!data?.txs?.length) {
+    if (!data?.transactions?.length) {
       throw new Error(`No transactions returned from cancelOrders response: ${JSON.stringify(data)}`);
     }
     const signatures: string[] = [];
-    for (const txBase64 of data.txs) {
+    for (const txBase64 of data.transactions) {
       const transaction = VersionedTransaction.deserialize(Buffer.from(txBase64, 'base64'));
       transaction.sign([fromKeypair]);
       const rawTx = transaction.serialize();
@@ -543,7 +546,9 @@ export class JupiterService implements OnModuleInit {
       });
       const confirmation = await this.connection.confirmTransaction(txSig, 'finalized');
       if (confirmation.value.err) {
-        throw new Error(`Transaction failed: ${JSON.stringify(confirmation.value.err)}\n\nhttps://solscan.io/tx/${txSig}`);
+        throw new Error(
+          `Transaction failed: ${JSON.stringify(confirmation.value.err)}\n\nhttps://solscan.io/tx/${txSig}`,
+        );
       }
       signatures.push(txSig);
     }
@@ -557,28 +562,39 @@ export class JupiterService implements OnModuleInit {
   }
 
   async getActiveLimitOrders(params: { userAddress: string }) {
-    const response = await fetch(`https://api.jup.ag/limit/v2/openOrders?wallet=${params.userAddress}`);
+    const response = await fetch(
+      `${this.ENDPOINT_APIS_URL.TRIGGER_ORDERS}?user=${params.userAddress}&orderStatus=active`,
+    );
     const rawOrders = await response.json();
+
+    // TODO optimize check for native
     return Promise.all(
-      rawOrders.map(async (item: any) => {
-        const account = item.account;
-        const inMeta = await this.solanaUtils.getTokenMetadata(account.inputMint);
-        const outMeta = await this.solanaUtils.getTokenMetadata(account.outputMint);
-        const inDecimals = await this.solanaUtils.getTokenDecimals(account.inputMint);
-        const outDecimals = await this.solanaUtils.getTokenDecimals(account.outputMint);
-        const makingAmount = Number(account.makingAmount) / Math.pow(10, inDecimals);
-        const takingAmount = Number(account.takingAmount) / Math.pow(10, outDecimals);
-        const createdDate = new Date(account.createdAt * 1000);
-        const createdAtStr = createdDate.toISOString().replace(/\.\d+Z$/, ' UTC');
+      rawOrders?.orders.map(async (item: any) => {
+        const inMeta =
+          item.inputMint === ZERO_SOL_ADDRESS
+            ? { symbol: 'SOL' }
+            : await this.solanaUtils.getTokenMetadata(item.inputMint);
+        const outMeta =
+          item.outputMint === ZERO_SOL_ADDRESS
+            ? { symbol: 'SOL' }
+            : await this.solanaUtils.getTokenMetadata(item.outputMint);
+        const inDecimals =
+          item.inputMint === ZERO_SOL_ADDRESS ? 9 : await this.solanaUtils.getTokenDecimals(item.inputMint);
+        const outDecimals =
+          item.outputMint === ZERO_SOL_ADDRESS ? 9 : await this.solanaUtils.getTokenDecimals(item.outputMint);
+        const makingAmount = Number(item.makingAmount) / Math.pow(10, inDecimals);
+        const takingAmount = Number(item.takingAmount) / Math.pow(10, outDecimals);
+        // const createdDate = new Date(item.createdAt * 1000);
+        const createdAtStr = item.createdAt.replace(/\.\d+Z$/, ' UTC');
         return {
           inputToken: inMeta.symbol,
           outputToken: outMeta.symbol,
           makingAmount: Number(makingAmount.toFixed(5)),
           takingAmount: Number(takingAmount.toFixed(5)),
           createdAt: createdAtStr,
-          orderPubkey: item.publicKey,
+          orderPubkey: item.userPubkey,
         };
-      })
+      }),
     );
   }
 
@@ -588,7 +604,7 @@ export class JupiterService implements OnModuleInit {
     const allOrders: any[] = [];
     while (hasMoreData) {
       const response = await fetch(
-        `https://api.jup.ag/limit/v2/orderHistory?wallet=${params.userAddress}&page=${page}`
+        `${this.ENDPOINT_APIS_URL.TRIGGER_ORDERS}?user=${params.userAddress}&orderStatus=history&page=${page}`,
       );
       const data: {
         orders: any[];
@@ -603,7 +619,7 @@ export class JupiterService implements OnModuleInit {
   }
 
   async getPrice(mintAddress: string): Promise<number> {
-    const url = `https://api.jup.ag/price/v2?ids=${mintAddress}`;
+    const url = `${this.ENDPOINT_APIS_URL.PRICE}?ids=${mintAddress}`;
     const response = await fetch(url);
     if (!response.ok) {
       throw new Error(`Failed to fetch price. HTTP error: ${response.status}`);
